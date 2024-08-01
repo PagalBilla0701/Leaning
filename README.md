@@ -1,58 +1,37 @@
-Let's go through the steps to develop the Spring Batch application to load files into the COPS_CUST_INDICATORS table as per your requirements. We'll configure the batch jobs to handle both insert and update operations and schedule them to run every 10 minutes. Here's a detailed plan for the development:
+Let's start by creating the Spring Batch application without using JobBuilderFactory and StepBuilderFactory. We'll configure the job and steps directly and ensure it meets the requirements.
 
-1. Set Up Spring Batch Dependencies
-First, add the necessary dependencies to your pom.xml:
+Project Structure
+Ensure your project structure is as follows:
 
-xml
+lua
 Copy code
-<dependencies>
-    <!-- Spring Boot and Spring Batch dependencies -->
-    <dependency>
-        <groupId>org.springframework.boot</groupId>
-        <artifactId>spring-boot-starter-batch</artifactId>
-    </dependency>
-    <dependency>
-        <groupId>org.springframework.boot</groupId>
-        <artifactId>spring-boot-starter-jdbc</artifactId>
-    </dependency>
-    <dependency>
-        <groupId>org.springframework.batch</groupId>
-        <artifactId>spring-batch-core</artifactId>
-    </dependency>
-    
-    <!-- Oracle JDBC driver -->
-    <dependency>
-        <groupId>com.oracle.database.jdbc</groupId>
-        <artifactId>ojdbc8</artifactId>
-        <scope>runtime</scope>
-    </dependency>
-    
-    <!-- Other necessary dependencies -->
-    <dependency>
-        <groupId>org.springframework.boot</groupId>
-        <artifactId>spring-boot-starter</artifactId>
-    </dependency>
-    <dependency>
-        <groupId>org.springframework.boot</groupId>
-        <artifactId>spring-boot-starter-data-jpa</artifactId>
-    </dependency>
-    <dependency>
-        <groupId>org.springframework.boot</groupId>
-        <artifactId>spring-boot-starter-web</artifactId>
-    </dependency>
-</dependencies>
-2. Configure the Batch Infrastructure
-Create a configuration class to set up the job repository, transaction manager, and data source.
+src
+|-- main
+    |-- java
+        |-- com
+            |-- example
+                |-- batch
+                    |-- config
+                        |-- BatchConfig.java
+                        |-- JobConfig.java
+                    |-- job
+                        |-- KycIndicatorItemProcessor.java
+                        |-- KycIndicatorItemReader.java
+                        |-- KycIndicatorItemWriter.java
+                        |-- JobScheduler.java
+                    |-- model
+                        |-- KycIndicator.java
+    |-- resources
+        |-- application.properties
+        |-- kyc_indicators.csv
+1. Batch Configuration
+Configure the batch setup with the necessary beans:
 
 java
 Copy code
 import org.springframework.batch.core.configuration.annotation.EnableBatchProcessing;
-import org.springframework.batch.core.configuration.annotation.JobBuilderFactory;
-import org.springframework.batch.core.configuration.annotation.StepBuilderFactory;
-import org.springframework.batch.core.launch.support.RunIdIncrementer;
 import org.springframework.batch.core.repository.JobRepository;
 import org.springframework.batch.core.repository.support.JobRepositoryFactoryBean;
-import org.springframework.batch.core.configuration.annotation.DefaultBatchConfigurer;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
@@ -63,76 +42,77 @@ import javax.sql.DataSource;
 
 @Configuration
 @EnableBatchProcessing
-public class BatchConfig extends DefaultBatchConfigurer {
+public class BatchConfig {
 
     @Autowired
     private DataSource dataSource;
 
-    @Override
-    public PlatformTransactionManager getTransactionManager() {
+    @Bean
+    public PlatformTransactionManager transactionManager() {
         return new DataSourceTransactionManager(dataSource);
     }
 
     @Bean
-    public JobRepository jobRepository() throws Exception {
+    public JobRepository jobRepository(PlatformTransactionManager transactionManager) throws Exception {
         JobRepositoryFactoryBean factory = new JobRepositoryFactoryBean();
         factory.setDataSource(dataSource);
-        factory.setTransactionManager(getTransactionManager());
+        factory.setTransactionManager(transactionManager);
         factory.setIsolationLevelForCreate("ISOLATION_SERIALIZABLE");
         factory.setDatabaseType("ORACLE");
         factory.afterPropertiesSet();
         return factory.getObject();
     }
-
-    @Bean
-    public JobBuilderFactory jobBuilderFactory(JobRepository jobRepository) {
-        return new JobBuilderFactory(jobRepository);
-    }
-
-    @Bean
-    public StepBuilderFactory stepBuilderFactory(JobRepository jobRepository, PlatformTransactionManager transactionManager) {
-        return new StepBuilderFactory(jobRepository, transactionManager);
-    }
 }
-3. Create the Batch Job
-Define the job, steps, and tasklets.
+2. Job Configuration
+Define the job and steps directly:
 
 java
 Copy code
 import org.springframework.batch.core.Job;
 import org.springframework.batch.core.Step;
-import org.springframework.batch.core.configuration.annotation.JobBuilderFactory;
-import org.springframework.batch.core.configuration.annotation.StepBuilderFactory;
+import org.springframework.batch.core.configuration.annotation.EnableBatchProcessing;
+import org.springframework.batch.core.launch.JobLauncher;
 import org.springframework.batch.core.launch.support.RunIdIncrementer;
+import org.springframework.batch.core.repository.JobRepository;
+import org.springframework.batch.core.step.builder.StepBuilder;
+import org.springframework.batch.core.step.tasklet.TaskletStep;
+import org.springframework.batch.item.ItemProcessor;
+import org.springframework.batch.item.ItemReader;
+import org.springframework.batch.item.ItemWriter;
+import org.springframework.batch.item.file.FlatFileItemReader;
+import org.springframework.batch.item.file.mapping.BeanWrapperFieldSetMapper;
+import org.springframework.batch.item.file.mapping.DefaultLineMapper;
+import org.springframework.batch.item.file.transform.DelimitedLineTokenizer;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.core.io.ClassPathResource;
+import org.springframework.scheduling.annotation.Scheduled;
 
 @Configuration
+@EnableBatchProcessing
 public class JobConfig {
 
     @Bean
-    public Job importKycIndicatorsJob(JobBuilderFactory jobBuilderFactory, Step step1) {
-        return jobBuilderFactory.get("importKycIndicatorsJob")
+    public Job importKycIndicatorsJob(JobRepository jobRepository, Step step1) {
+        return new JobBuilder("importKycIndicatorsJob", jobRepository)
             .incrementer(new RunIdIncrementer())
-            .flow(step1)
-            .end()
+            .start(step1)
             .build();
     }
 
     @Bean
-    public Step step1(StepBuilderFactory stepBuilderFactory, ItemReader<KycIndicator> reader,
-                      ItemProcessor<KycIndicator, KycIndicator> processor, ItemWriter<KycIndicator> writer) {
-        return stepBuilderFactory.get("step1")
-            .<KycIndicator, KycIndicator>chunk(10)
+    public Step step1(JobRepository jobRepository, PlatformTransactionManager transactionManager, 
+                      ItemReader<KycIndicator> reader, ItemProcessor<KycIndicator, KycIndicator> processor,
+                      ItemWriter<KycIndicator> writer) {
+        return new StepBuilder("step1", jobRepository)
+            .<KycIndicator, KycIndicator>chunk(10, transactionManager)
             .reader(reader)
             .processor(processor)
             .writer(writer)
             .build();
     }
 }
-4. Develop the Reader, Processor, and Writer
-Implement classes to read data from CSV files, process the data, and write it to the database.
-
+3. Reader, Processor, and Writer Configuration
 Reader
 java
 Copy code
@@ -175,11 +155,11 @@ public class KycIndicatorItemProcessor implements ItemProcessor<KycIndicator, Ky
 
     @Override
     public KycIndicator process(KycIndicator kycIndicator) throws Exception {
-        kycIndicator.setdCreat(new Date());
-        kycIndicator.setdUpd(new Date());
-        kycIndicator.setnKycStatusFileId(1L);  // Static value for dev purposes
-        kycIndicator.setxCreat("system");      // Static value for dev purposes
-        kycIndicator.setxUpd("system");        // Static value for dev purposes
+        kycIndicator.setDCreat(new Date());
+        kycIndicator.setDUpd(new Date());
+        kycIndicator.setNKycStatusFileId(1L);  // Static value for dev purposes
+        kycIndicator.setXCreat("system");      // Static value for dev purposes
+        kycIndicator.setXUpd("system");        // Static value for dev purposes
         return kycIndicator;
     }
 }
@@ -207,11 +187,8 @@ public class KycIndicatorItemWriter {
         return writer;
     }
 }
-5. Handle Insert and Update Operations
-The SQL query in the writer uses the MERGE INTO statement to handle both insert and update operations. We will ensure that during the first insert, d_creat and d_upd will contain the date on which the file was first loaded, and during updates, d_upd should change to the current date, while d_creat remains the same.
-
-6. Schedule the Batch Job
-Configure a scheduler to run the job every 10 minutes.
+4. Scheduling the Job
+Configure the scheduler to run the job every 10 minutes:
 
 java
 Copy code
@@ -241,8 +218,8 @@ public class JobScheduler {
         jobLauncher.run(importKycIndicatorsJob, params);
     }
 }
-7. Create CSV File Models
-Define models to map the CSV file data.
+5. CSV File Model
+Define the KycIndicator class to map the CSV data:
 
 java
 Copy code
@@ -260,11 +237,8 @@ public class KycIndicator {
 
     // Getters and setters
 }
-8. Test the Application
-Ensure that the application works as expected by running it and checking the database for the loaded data.
-
-Final Code Structure
-The final project structure should look like this:
+Final Project Structure
+Ensure your project structure looks like this:
 
 lua
 Copy code
@@ -274,18 +248,21 @@ src
         |-- com
             |-- example
                 |-- batch
-                    |-- BatchConfig.java
-                    |-- JobConfig.java
-                    |-- JobScheduler.java
-                    |-- KycIndicatorItemProcessor.java
-                    |-- KycIndicatorItemReader.java
-                    |-- KycIndicatorItemWriter.java
+                    |-- config
+                        |-- BatchConfig.java
+                        |-- JobConfig.java
+                    |-- job
+                        |-- KycIndicatorItemProcessor.java
+                        |-- KycIndicatorItemReader.java
+                        |-- KycIndicatorItemWriter.java
+                        |-- JobScheduler.java
                     |-- model
                         |-- KycIndicator.java
     |-- resources
         |-- application.properties
         |-- kyc_indicators.csv
-In application.properties, configure your database connection:
+application.properties Configuration
+Configure your database connection:
 
 properties
 Copy code
@@ -293,4 +270,12 @@ spring.datasource.url=jdbc:oracle:thin:@//your-db-host:1521/your-db-service
 spring.datasource.username=your-db-username
 spring.datasource.password=your-db-password
 spring.batch.initialize-schema=always
-With these steps, you should have a functional Spring Batch application that loads CSV files into the COPS_CUST_INDICATORS table, handling both insert and update operations and running every 10 minutes.
+With these changes, you should have a fully functional Spring Batch application that loads CSV files into the COPS_CUST_INDICATORS table, handling both insert and update operations, and running every 10 minutes.
+
+
+
+
+
+
+
+
